@@ -138,7 +138,12 @@ export class SchemaGenerator {
             this.inspectNode(sourceFile, typeChecker, types);
         }
     }
-    protected inspectNode(node: ts.Node, typeChecker: ts.TypeChecker, allTypes: Map<string, ts.Node>): void {
+    protected inspectNode(
+        node: ts.Node,
+        typeChecker: ts.TypeChecker,
+        allTypes: Map<string, ts.Node>,
+        forceExpose = false,
+    ): void {
         switch (node.kind) {
             case ts.SyntaxKind.VariableDeclaration: {
                 const variableDeclarationNode = node as ts.VariableDeclaration;
@@ -155,6 +160,7 @@ export class SchemaGenerator {
             case ts.SyntaxKind.EnumDeclaration:
             case ts.SyntaxKind.TypeAliasDeclaration:
                 if (
+                    forceExpose ||
                     this.config?.expose === "all" ||
                     (this.isExportType(node) && !this.isGenericType(node as ts.TypeAliasDeclaration))
                 ) {
@@ -171,18 +177,55 @@ export class SchemaGenerator {
             case ts.SyntaxKind.ExportSpecifier: {
                 const exportSpecifierNode = node as ts.ExportSpecifier;
                 const symbol = typeChecker.getExportSpecifierLocalTargetSymbol(exportSpecifierNode);
-                if (symbol?.declarations?.length === 1) {
-                    const declaration = symbol.declarations[0];
+
+                // should never hit this (maybe type error in user's code)
+                if (!symbol || !symbol.declarations) {
+                    return;
+                }
+
+                for (const declaration of symbol.declarations) {
                     if (declaration.kind === ts.SyntaxKind.ImportSpecifier) {
                         // Handling the `Foo` in `import { Foo } from "./lib"; export { Foo };`
                         const importSpecifierNode = declaration as ts.ImportSpecifier;
-                        const type = typeChecker.getTypeAtLocation(importSpecifierNode);
-                        if (type.symbol?.declarations?.length === 1) {
-                            this.inspectNode(type.symbol.declarations[0], typeChecker, allTypes);
+
+                        const symbol =
+                            typeChecker.getTypeAtLocation(importSpecifierNode).symbol ||
+                            typeChecker.getSymbolAtLocation(importSpecifierNode) ||
+                            importSpecifierNode.symbol;
+
+                        // should never hit this (maybe type error in user's code)
+                        if (!symbol?.declarations) {
+                            return;
+                        }
+
+                        for (const declaration of symbol.declarations) {
+                            // all statements here were inside a export { Foo } statement,
+                            // so they must be exported
+
+                            // recursion doesn't work here
+                            if (ts.isImportSpecifier(declaration)) {
+                                // directly import/exported nodes.
+                                const symbol =
+                                    typeChecker.getTypeAtLocation(declaration).symbol ||
+                                    typeChecker.getSymbolAtLocation(declaration) ||
+                                    declaration.symbol;
+
+                                // should never hit this (maybe type error in user's code)
+                                if (!symbol?.declarations) {
+                                    console.log(symbol);
+                                    return;
+                                }
+
+                                for (const subdecl of symbol.declarations) {
+                                    console.log(subdecl.kind, subdecl.getText());
+                                }
+                            } else {
+                                this.inspectNode(declaration, typeChecker, allTypes, true);
+                            }
                         }
                     } else {
                         // Handling the `Bar` in `export { Bar } from './lib';`
-                        this.inspectNode(declaration, typeChecker, allTypes);
+                        this.inspectNode(declaration, typeChecker, allTypes, true);
                     }
                 }
                 return;
@@ -192,8 +235,23 @@ export class SchemaGenerator {
                     return;
                 }
 
-                // export { variable } clauses
                 if (!node.moduleSpecifier) {
+                    if (!node.exportClause) {
+                        throw new Error(
+                            `ExportDeclaration has no moduleSpecifier or exportClause: ${node.pos === -1 ? "<unresolved>" : node.getText()}`,
+                        );
+                    }
+
+                    if (ts.isNamespaceExport(node.exportClause)) {
+                        throw new Error(
+                            `Namespace exports are not supported: ${node.pos === -1 ? "<unresolved>" : node.getText()}`,
+                        );
+                    }
+
+                    for (const element of node.exportClause.elements) {
+                        this.inspectNode(element, typeChecker, allTypes);
+                    }
+
                     return;
                 }
 

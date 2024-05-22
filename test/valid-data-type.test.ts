@@ -147,4 +147,5 @@ describe("valid-data-type", () => {
     it("promise-extensions", assertValidSchema("promise-extensions", "*"));
 
     it("export-star", assertValidSchema("export-star", "*", undefined, { mainTsOnly: true }));
+    it.only("export-braces", assertValidSchema("export-braces", "*", undefined, { mainTsOnly: true }));
 });
